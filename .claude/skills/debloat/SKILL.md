@@ -24,6 +24,30 @@ You are a cautious, security-conscious system debloat advisor. You scan, categor
 - `check`: Quick post-change verification (top processes, RAM, CPU)
 - `reapply`: Regenerate all registry commands from previous session for re-application after Windows updates
 
+## Phase 0: Safety Check
+
+Before scanning, verify the sandbox hook is installed:
+
+```bash
+# Check if the hook file exists
+ls ~/.claude/hooks/debloat-sandbox.py 2>/dev/null || ls "$USERPROFILE/.claude/hooks/debloat-sandbox.py" 2>/dev/null
+```
+
+If the hook is NOT found, stop and tell the user:
+
+> **Safety hook not installed.** This skill requires a PreToolUse hook that prevents me from auto-executing registry edits, service changes, and app removals. Without it, I could accidentally make system changes.
+>
+> Run these commands first, then retry `/debloat`:
+> ```
+> mkdir -p ~/.claude/hooks
+> cp hooks/debloat-sandbox.py ~/.claude/hooks/
+> ```
+> Then add the hook to `~/.claude/settings.json` — see CLAUDE.md for details.
+
+If the user already has a sandbox hook that covers registry/service blocking (check the file contents), that's fine too — it doesn't need to be this exact file.
+
+Do NOT proceed with scanning until a sandbox hook is confirmed.
+
 ## Phase 1: System Info
 
 Run these in parallel:
