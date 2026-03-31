@@ -48,7 +48,9 @@ If the user already has a sandbox hook that covers registry/service blocking (ch
 
 Do NOT proceed with scanning until a sandbox hook is confirmed.
 
-## Phase 1: System Info
+## Phase 1: System Info + Baseline Metrics
+
+Capture a full baseline BEFORE any changes. This is the "before" snapshot for comparison.
 
 Run these in parallel:
 
@@ -56,11 +58,31 @@ Run these in parallel:
 # OS edition (Home vs Pro matters for policy enforcement)
 powershell -Command '(Get-CimInstance Win32_OperatingSystem).Caption'
 
-# RAM and CPU
-powershell -Command '$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = $total - $free; $pct = [math]::Round(($used/$total)*100,1); Write-Output "RAM: ${used}GB / ${total}GB (${pct}% used, ${free}GB free)"'
+# Computer name (for the log file)
+powershell -Command '$env:COMPUTERNAME'
+
+# Baseline metrics snapshot
+powershell -Command '$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = $total - $free; $pct = [math]::Round(($used/$total)*100,1); $procs = (Get-Process).Count; $svcs = (Get-Service | Where-Object {$_.Status -eq "Running"}).Count; Write-Output "=== BASELINE ==="; Write-Output "Processes:  $procs"; Write-Output "Services:   $svcs running"; Write-Output "RAM total:  $total GB"; Write-Output "RAM used:   $used GB ($pct%)"; Write-Output "RAM free:   $free GB"'
 
 powershell -Command 'Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, @{N="Load_Pct";E={$_.LoadPercentage}} | Format-Table -AutoSize'
 ```
+
+**Record these baseline numbers.** You will need them for the before/after comparison in Phase 6 and the final report in Phase 7. Display them to the user as:
+
+```
+BASELINE (before changes)
+  Processes:  [N]
+  Services:   [N] running
+  RAM:        [X]GB / [Y]GB ([Z]% used, [W]GB free)
+  CPU:        [N]% (idle target: under 5%)
+```
+
+Reference targets for a clean Windows 11 idle:
+- Processes: 100-130
+- RAM used: under 3 GB
+- CPU: under 5%
+
+These are aspirational — corporate IT tools and user apps will always push above these. The targets help contextualize how far the machine is from clean.
 
 **Important:** Determine if this is Windows Home or Pro/Enterprise. This changes which registry approaches work.
 
@@ -97,9 +119,22 @@ powershell -Command 'Get-ScheduledTask | Where-Object {$_.State -eq "Ready" -and
 powershell -Command 'Get-AppxPackage | Select-Object Name, Publisher | Sort-Object Name | Format-Table -AutoSize'
 ```
 
-## Phase 3: Categorize and Report
+## Phase 3: Research and Categorize
 
-After scanning, categorize EVERY finding into one of these buckets:
+### MANDATORY: Web-verify before recommending
+
+Do NOT rely solely on training data to determine whether something is safe to disable. For every item you plan to recommend disabling or removing:
+
+1. **Search the web** for "[item name] safe to disable Windows 11 [current year]" or "[service name] what does it do Windows 11"
+2. **Check for recent reports** of issues caused by disabling it (especially after recent Windows updates)
+3. **Verify registry key paths** still work on the current Windows version — Microsoft changes these between builds
+4. **For HKLM policy keys on Home edition**, search to confirm whether they're enforced or silently ignored
+
+Use the Agent tool with WebSearch/WebFetch to research items in parallel batches. Group related items (e.g., all Dell services, all browser settings) into single research queries for efficiency.
+
+If web search is unavailable, explicitly tell the user: "I could not verify this against current sources — this recommendation is based on training data which may be outdated. Please verify before applying."
+
+### Categorize EVERY finding into one of these buckets:
 
 ### Category A: OS Core (DO NOT TOUCH)
 Windows shell, DWM, audio, networking, security, RPC, etc. These are load-bearing.
@@ -173,20 +208,31 @@ After user selects items, generate the appropriate commands:
 
 **IMPORTANT:** On Windows 11 Home, warn the user which HKLM policy keys may be silently ignored, and suggest HKCU alternatives where they exist.
 
-## Phase 6: Verify
+## Phase 6: Verify (Before/After Comparison)
 
-After user applies changes and reboots, run the `check` scan:
+After user applies changes and reboots, capture the "after" snapshot using the same metrics as Phase 1:
 
 ```powershell
-# Quick state check
-powershell -Command 'Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20 Name, @{N="RAM_MB";E={[math]::Round($_.WorkingSet64/1MB,1)}}, @{N="CPU_s";E={[math]::Round($_.CPU,1)}} | Format-Table -AutoSize'
-
-powershell -Command '$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = $total - $free; $pct = [math]::Round(($used/$total)*100,1); Write-Output "RAM: ${used}GB / ${total}GB (${pct}% used, ${free}GB free)"'
+powershell -Command '$os = Get-CimInstance Win32_OperatingSystem; $total = [math]::Round($os.TotalVisibleMemorySize/1MB,1); $free = [math]::Round($os.FreePhysicalMemory/1MB,1); $used = $total - $free; $pct = [math]::Round(($used/$total)*100,1); $procs = (Get-Process).Count; $svcs = (Get-Service | Where-Object {$_.Status -eq "Running"}).Count; Write-Output "=== AFTER CHANGES ==="; Write-Output "Processes:  $procs"; Write-Output "Services:   $svcs running"; Write-Output "RAM total:  $total GB"; Write-Output "RAM used:   $used GB ($pct%)"; Write-Output "RAM free:   $free GB"'
 
 powershell -Command 'Get-CimInstance Win32_Processor | Select-Object @{N="Load_Pct";E={$_.LoadPercentage}} | Format-Table -AutoSize'
+
+powershell -Command 'Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20 Name, @{N="RAM_MB";E={[math]::Round($_.WorkingSet64/1MB,1)}}, @{N="CPU_s";E={[math]::Round($_.CPU,1)}} | Format-Table -AutoSize'
 ```
 
-Compare to pre-change baseline and report the delta.
+Present a side-by-side comparison using the Phase 1 baseline:
+
+```
+                    BEFORE      AFTER       DELTA
+Processes:          326         278         -48
+Services running:   95          82          -13
+RAM used:           10.7 GB     9.3 GB      -1.4 GB freed
+RAM free:           1.0 GB      2.4 GB      +1.4 GB
+RAM %:              91.5%       79.5%       -12.0%
+CPU:                42%         15%         -27%
+```
+
+Also show the updated top 20 processes by RAM so the user can see what's still consuming resources and decide if further cleanup is warranted.
 
 ## Phase 7: Save Report
 
@@ -198,10 +244,11 @@ System Cleanup Log - [COMPUTERNAME] - [DATE]
 ```
 
 Include:
+- Before/after metrics comparison table (processes, services, RAM, CPU)
 - Everything removed/disabled with the exact commands used
 - What's still running and why (corporate IT, user choice, OS core)
 - Reapply commands block for after Windows updates
-- Before/after RAM and process counts
+- Date of cleanup (for tracking when updates might reset things)
 
 ## Reapply Mode
 
